@@ -392,6 +392,18 @@ if __name__ == "__main__":
             }
         })
 
+    @mcp.custom_route("/", methods=["GET"])
+    async def root_handler(request):
+        """
+        Friendly root endpoint so users don't see 'Not Found' when visiting the base URL in a browser.
+        """
+        return JSONResponse({
+            "status": "online",
+            "message": "RepoLens MCP Server is running.",
+            "sse_endpoint": "/sse",
+            "version": "1.0.0"
+        })
+
     transport = os.environ.get("MCP_TRANSPORT", "stdio").lower()
     if transport == "sse":
         port = int(os.environ.get("PORT", 8000))
