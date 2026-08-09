@@ -328,9 +328,8 @@ threading.Thread(target=_preload_indexer, daemon=True).start()
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
-    # Eagerly index on startup so the first tool call is not slow.
-    _get_indexer()
-    
+    # The indexer is eagerly loaded in a background thread above.
+
     transport = os.environ.get("MCP_TRANSPORT", "stdio").lower()
     if transport == "sse":
         port = int(os.environ.get("PORT", 8000))

@@ -109,18 +109,6 @@ source .venv/bin/activate  # or .venv\Scripts\activate on Windows
 fastmcp dev inspector src/server.py
 ```
 
-### 4. Cloud Deployment (Render)
-
-RepoLens MCP natively supports Server-Sent Events (SSE) and is Dockerized for easy cloud deployment on platforms like [Render](https://render.com).
-
-**Deploy via Blueprint:**
-1. Fork or push this repository to your GitHub account.
-2. Sign in to Render and click **New > Blueprint**.
-3. Connect your repository. Render will automatically read the `render.yaml` and deploy a Dockerized Web Service.
-4. The service will be exposed via SSE at `https://your-service.onrender.com/sse`.
-
-*Note: The `Dockerfile` pre-downloads the Hugging Face `all-MiniLM-L6-v2` model during the build phase, eliminating cold-start indexing latency!*
-
 ## Tool Reference
 
 | Tool Name | Description | Parameters |
@@ -144,3 +132,34 @@ Our baseline run on the RepoLens codebase itself (22 complex architectural & loo
 | **LLM Correctness** | 2.09 / 5.0 | Scored strictly using deterministic keyword-overlap fallback |
 
 *(Run `python eval/run_eval.py --repo .` to regenerate these metrics)*
+
+## Cloud Deployment (Render)
+
+RepoLens is pre-configured to be deployed globally as an MCP Server over Server-Sent Events (SSE) using Render's free or low-cost Docker hosting.
+
+### Step-by-Step Deployment Guide
+
+1. **Push to GitHub**: Ensure your project is pushed to a public or private GitHub repository.
+2. **Create a Render Account**: Go to [Render.com](https://render.com) and sign in with GitHub.
+3. **Deploy via Blueprint (Easiest)**:
+   - Go to your Render Dashboard and click **New > Blueprint**.
+   - Connect your GitHub repository.
+   - Render will automatically read the `render.yaml` file in the root of the repository.
+   - Click **Apply** to provision the Web Service.
+   *(Note: The blueprint sets `MCP_TRANSPORT=sse` and binds the correct ports automatically).*
+4. **Deploy Manually (Alternative)**:
+   - Go to your Render Dashboard and click **New > Web Service**.
+   - Connect your GitHub repository.
+   - Choose **Docker** as the Runtime environment.
+   - Under **Advanced**, add a new Environment Variable:
+     - Key: `MCP_TRANSPORT`
+     - Value: `sse`
+   - Click **Create Web Service**.
+5. **Connect your Client**:
+   - Once deployed, Render will provide a public URL (e.g., `https://repolens-mcp-xyz.onrender.com`).
+   - In your MCP Client (like Claude Desktop or Cursor), configure the SSE connection:
+     - Go to the MCP settings and add a new Server.
+     - Set the type to **SSE** (Server-Sent Events).
+     - Enter your Render URL with the `/sse` endpoint (e.g., `https://repolens-mcp-xyz.onrender.com/sse`).
+
+Because the Hugging Face embedding models are pre-downloaded in our customized `Dockerfile`, the server will bypass the heavy "cold start" latency and boot up incredibly fast!
