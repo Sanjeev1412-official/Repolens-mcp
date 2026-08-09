@@ -109,6 +109,18 @@ source .venv/bin/activate  # or .venv\Scripts\activate on Windows
 fastmcp dev inspector src/server.py
 ```
 
+### 4. Cloud Deployment (Render)
+
+RepoLens MCP natively supports Server-Sent Events (SSE) and is Dockerized for easy cloud deployment on platforms like [Render](https://render.com).
+
+**Deploy via Blueprint:**
+1. Fork or push this repository to your GitHub account.
+2. Sign in to Render and click **New > Blueprint**.
+3. Connect your repository. Render will automatically read the `render.yaml` and deploy a Dockerized Web Service.
+4. The service will be exposed via SSE at `https://your-service.onrender.com/sse`.
+
+*Note: The `Dockerfile` pre-downloads the Hugging Face `all-MiniLM-L6-v2` model during the build phase, eliminating cold-start indexing latency!*
+
 ## Tool Reference
 
 | Tool Name | Description | Parameters |
