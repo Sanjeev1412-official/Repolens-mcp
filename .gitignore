@@ -1,0 +1,35 @@
+# Environments
+.venv/
+env/
+venv/
+ENV/
+
+# Python caches
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+
+# Data and Logs
+chroma_db/
+.eval_chroma_db/
+.smoke_chroma_db/
+*.log
+eval/results.json
+
+# IDEs
+.vscode/
+.idea/
+.cursor/
+
+# Build artifacts
+build/
+dist/
+*.egg-info/
+
+# Generated CLI and Tests
+repolens-cli.py
+SKILL.md
+test_mtime_db/
+test_mtime_db2/
+.ruff_cache/

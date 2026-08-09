@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json.schemastore.org/fastmcp.json",
+  "name": "RepoLens MCP",
+  "description": "AST-aware code search and Git history MCP server for local repositories.",
+  "version": "0.1.0",
+
+  "server": {
+    "module": "src.server",
+    "object": "mcp"
+  },
+
+  "environment": {
+    "REPO_PATH": ".",
+    "CHROMA_PATH": "./chroma_db",
+    "PYTHONPATH": "."
+  },
+
+  "dev": {
+    "transport": "stdio",
+    "log_level": "DEBUG",
+    "reload": false,
+    "inspector": true
+  },
+
+  "scripts": {
+    "dev":   "fastmcp dev inspector src/server.py --transport stdio",
+    "inspect": "fastmcp inspect src/server.py",
+    "smoke": "python scripts/smoke_test.py"
+  }
+}

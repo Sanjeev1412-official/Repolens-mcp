@@ -1,0 +1,9 @@
+services:
+  - type: web
+    name: repolens-mcp
+    env: docker
+    envVars:
+      - key: MCP_TRANSPORT
+        value: sse
+      - key: REPO_PATH
+        value: /app

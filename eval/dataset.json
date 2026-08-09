@@ -1,0 +1,187 @@
+{
+  "_meta": {
+    "description": "RepoLens MCP ground-truth evaluation dataset targeting the RepoLens project itself.",
+    "version": "1.0.0",
+    "total_cases": 22,
+    "categories": ["architecture", "function_lookup", "git_history", "data_flow"],
+    "note": "expected_files and expected_symbols refer to the src/ package of this project."
+  },
+  "cases": [
+    {
+      "id": "eval_001",
+      "category": "function_lookup",
+      "question": "Which function is responsible for recursively scanning a repository directory and returning a list of file descriptor dictionaries?",
+      "expected_files": ["src/chunker.py"],
+      "expected_symbols": ["load_repo_files"],
+      "ground_truth_answer": "The `load_repo_files` function in `src/chunker.py` recursively walks a repository using `os.walk`, prunes ignored directories in-place, skips binary files and lock-file artefacts, reads each text file, and returns a list of dicts containing `abs_path`, `rel_path`, `extension`, and `content`."
+    },
+    {
+      "id": "eval_002",
+      "category": "function_lookup",
+      "question": "What is the fallback chunking strategy used when tree-sitter cannot parse a file?",
+      "expected_files": ["src/chunker.py"],
+      "expected_symbols": ["_chunk_with_lines"],
+      "ground_truth_answer": "When AST parsing is unavailable or fails, `_chunk_with_lines` divides the file into overlapping fixed-size windows of 50 lines with a 10-line overlap. Each window is stored as a `CodeChunk` with `symbol_type='fallback'` and a synthetic name `chunk_N`."
+    },
+    {
+      "id": "eval_003",
+      "category": "function_lookup",
+      "question": "How does the chunker determine which tree-sitter language parser to use for a given file?",
+      "expected_files": ["src/chunker.py"],
+      "expected_symbols": ["_extension_to_language", "_get_parser"],
+      "ground_truth_answer": "`_extension_to_language` maps file extensions (e.g. `.py` → `python`, `.ts` → `typescript`) to tree-sitter language names. `_get_parser` lazily loads the grammar, first trying `tree-sitter-languages` and falling back to the standalone `tree-sitter-python` package. It returns `None` if no grammar is available."
+    },
+    {
+      "id": "eval_004",
+      "category": "function_lookup",
+      "question": "What Pydantic model represents a single code chunk, and what fields does it contain?",
+      "expected_files": ["src/chunker.py"],
+      "expected_symbols": ["CodeChunk"],
+      "ground_truth_answer": "`CodeChunk` is a Pydantic `BaseModel` with fields: `id` (16-char SHA-256 hex), `file_path` (repo-relative path), `symbol_name` (class/function name or synthetic label), `symbol_type` ('function', 'class', 'module', or 'fallback'), `start_line` (1-indexed), `end_line` (1-indexed, inclusive), and `code` (raw source text)."
+    },
+    {
+      "id": "eval_005",
+      "category": "function_lookup",
+      "question": "How are top-level class and function nodes extracted from a parsed syntax tree?",
+      "expected_files": ["src/chunker.py"],
+      "expected_symbols": ["_iter_top_level_nodes", "_node_name"],
+      "ground_truth_answer": "`_iter_top_level_nodes` iterates the direct children of the tree root node, matching against known class and function node type sets. For each match, `_node_name` finds the `identifier` or `name` child to extract the symbol name. Results are yielded as `(symbol_type, symbol_name, start_line, end_line)` tuples with 1-indexed line numbers."
+    },
+    {
+      "id": "eval_006",
+      "category": "function_lookup",
+      "question": "What is the ID generation strategy for CodeChunk instances?",
+      "expected_files": ["src/chunker.py"],
+      "expected_symbols": ["CodeChunk", "make_id"],
+      "ground_truth_answer": "`CodeChunk.make_id` computes a SHA-256 hash of the string `file_path::symbol_name::start_line` and returns the first 16 hex characters. This produces a deterministic, content-independent ID that is stable across re-indexing runs as long as the file structure does not change."
+    },
+    {
+      "id": "eval_007",
+      "category": "architecture",
+      "question": "What is the overall architecture of the RepoLens indexing pipeline from file discovery to ChromaDB storage?",
+      "expected_files": ["src/chunker.py", "src/indexer.py"],
+      "expected_symbols": ["load_repo_files", "chunk_file", "RepoLensIndexer", "index_repository"],
+      "ground_truth_answer": "The pipeline runs in four stages: (1) `load_repo_files` scans the repo and filters non-code files; (2) `chunk_file` parses each file with tree-sitter (or falls back to line windowing) producing `CodeChunk` objects; (3) `RepoLensIndexer._build_document` enriches each chunk with Git history metadata; (4) `sentence-transformers` embeds all documents in one batch and they are upserted into a persistent ChromaDB cosine-space collection."
+    },
+    {
+      "id": "eval_008",
+      "category": "architecture",
+      "question": "How does RepoLensIndexer initialise its embedding model and ChromaDB client?",
+      "expected_files": ["src/indexer.py"],
+      "expected_symbols": ["RepoLensIndexer"],
+      "ground_truth_answer": "`RepoLensIndexer.__init__` lazily imports `chromadb` and `sentence_transformers` to keep the module lightweight. It creates a `chromadb.PersistentClient` at the given path, calls `get_or_create_collection` with `hnsw:space=cosine`, then loads the `all-MiniLM-L6-v2` model via `SentenceTransformer`. Both the client and model are stored as instance attributes for reuse."
+    },
+    {
+      "id": "eval_009",
+      "category": "architecture",
+      "question": "How does the search_codebase function convert ChromaDB distances into similarity scores?",
+      "expected_files": ["src/indexer.py"],
+      "expected_symbols": ["search_codebase"],
+      "ground_truth_answer": "ChromaDB returns cosine distances in the range [0, 2]. `search_codebase` converts each distance `d` to a similarity score via `score = 1.0 - float(d)`, so the range becomes [-1, 1] (practically [0, 1] for well-behaved embeddings). Results are then sorted in descending order so the closest match appears first."
+    },
+    {
+      "id": "eval_010",
+      "category": "architecture",
+      "question": "How are the MCP tools registered and what transport protocol does the server use?",
+      "expected_files": ["src/server.py"],
+      "expected_symbols": ["mcp", "search_codebase", "read_file_content", "get_file_history"],
+      "ground_truth_answer": "Tools are registered via the `@mcp.tool()` decorator on plain Python functions. The `FastMCP` instance is named 'RepoLens MCP'. In production the server runs `mcp.run(transport='stdio')` which enables communication over standard input/output, making it compatible with Claude Desktop, Cursor, and other MCP clients."
+    },
+    {
+      "id": "eval_011",
+      "category": "architecture",
+      "question": "What directories and file types are excluded by the file scanner, and why?",
+      "expected_files": ["src/chunker.py"],
+      "expected_symbols": ["_IGNORED_DIRS", "_IGNORED_FILENAMES", "load_repo_files"],
+      "ground_truth_answer": "`_IGNORED_DIRS` prunes `.git`, `node_modules`, `venv`, `__pycache__`, `.pytest_cache`, `dist`, `build`, and similar directories that contain non-source artefacts. `_IGNORED_FILENAMES` excludes lock files like `package-lock.json`, `poetry.lock`, etc. Binary files are additionally excluded by a null-byte heuristic. The purpose is to reduce noise and keep the vector index focused on semantically meaningful source code."
+    },
+    {
+      "id": "eval_012",
+      "category": "function_lookup",
+      "question": "What does the read_file_content MCP tool do to prevent path traversal attacks?",
+      "expected_files": ["src/server.py"],
+      "expected_symbols": ["read_file_content"],
+      "ground_truth_answer": "`read_file_content` resolves both `REPO_PATH` and the requested `file_path` to absolute paths using `Path.resolve()`, then calls `target.relative_to(repo_root)`. If the resolved target is outside the repository root, `relative_to` raises `ValueError` and the tool returns an error string instead of reading the file."
+    },
+    {
+      "id": "eval_013",
+      "category": "function_lookup",
+      "question": "How does get_git_file_history handle repositories that are not Git repos or have no commits?",
+      "expected_files": ["src/git_utils.py"],
+      "expected_symbols": ["get_git_file_history"],
+      "ground_truth_answer": "`get_git_file_history` wraps all GitPython calls in try/except blocks. `InvalidGitRepositoryError` and `NoSuchPathError` from `git.Repo()` both return an empty list. `GitCommandError` during `iter_commits` also returns an empty list. Any unexpected exception is logged and also returns `[]`, so the caller always receives a list and never encounters an uncaught exception."
+    },
+    {
+      "id": "eval_014",
+      "category": "function_lookup",
+      "question": "How does format_git_metadata_string format commit history into a human-readable string?",
+      "expected_files": ["src/git_utils.py"],
+      "expected_symbols": ["format_git_metadata_string"],
+      "ground_truth_answer": "`format_git_metadata_string` returns an empty string for empty input. Otherwise it builds a header line `Git History (N commit(s)):` followed by one line per commit in the format `  [short_hash] YYYY-MM-DD | Author <email>: message`. The ISO-8601 date is trimmed to 10 characters for brevity."
+    },
+    {
+      "id": "eval_015",
+      "category": "data_flow",
+      "question": "Trace the data flow for a search_codebase tool call from the MCP client to the returned formatted string.",
+      "expected_files": ["src/server.py", "src/indexer.py"],
+      "expected_symbols": ["search_codebase", "_format_search_results"],
+      "ground_truth_answer": "1. The MCP client calls `search_codebase(query, top_k)` over stdio. 2. The tool validates the query and clamps top_k. 3. `_get_indexer()` returns the cached `RepoLensIndexer`. 4. `indexer.search_codebase(query, top_k)` embeds the query, calls `_collection.query`, converts distances to scores, and sorts results. 5. `_format_search_results` formats each result with Score/File/Symbol/Lines headers and a code snippet capped at `_SNIPPET_MAX_LINES`. 6. The formatted string is returned as MCP `TextContent`."
+    },
+    {
+      "id": "eval_016",
+      "category": "data_flow",
+      "question": "How does the enriched document string get constructed before embedding?",
+      "expected_files": ["src/indexer.py"],
+      "expected_symbols": ["_build_document"],
+      "ground_truth_answer": "`_build_document` combines: a header line `FILE: <path>  |  SYMBOL: <name> (<type>)  |  LINES: start-end`, then the Git history summary (if any), then a `---` separator, then the raw source code from the chunk. This enrichment allows the embedding model to capture both provenance metadata and code semantics in a single vector."
+    },
+    {
+      "id": "eval_017",
+      "category": "data_flow",
+      "question": "What happens when index_repository is called twice on the same repository?",
+      "expected_files": ["src/indexer.py"],
+      "expected_symbols": ["index_repository"],
+      "ground_truth_answer": "Calling `index_repository` twice is idempotent because ChromaDB's `upsert` operation uses the deterministic `chunk.id` as the document key. Existing documents with the same ID are updated in-place rather than duplicated. The collection count remains the same after the second call."
+    },
+    {
+      "id": "eval_018",
+      "category": "data_flow",
+      "question": "How does the server initialise the indexer on startup, and is it lazy or eager?",
+      "expected_files": ["src/server.py"],
+      "expected_symbols": ["_get_indexer"],
+      "ground_truth_answer": "The server uses a lazy singleton pattern via `_get_indexer()`. The module-level `_indexer` variable is `None` at import time. The first tool call (or an explicit call in `__main__`) triggers `_get_indexer()`, which creates a `RepoLensIndexer` and runs `index_repository(REPO_PATH)`, then caches the result. Subsequent calls return the cached instance. When run as `__main__`, indexing is triggered eagerly before `mcp.run()`."
+    },
+    {
+      "id": "eval_019",
+      "category": "architecture",
+      "question": "How does the file_filter parameter work in search_codebase?",
+      "expected_files": ["src/indexer.py"],
+      "expected_symbols": ["search_codebase"],
+      "ground_truth_answer": "When `file_filter` is provided, `search_codebase` builds a ChromaDB `where` clause `{'file_path': {'$contains': file_filter}}` and passes it to `collection.query`. This causes ChromaDB to pre-filter candidates to only those whose `file_path` metadata contains the given substring before performing vector similarity ranking."
+    },
+    {
+      "id": "eval_020",
+      "category": "function_lookup",
+      "question": "What is the role of the reset_collection method and when would you use it?",
+      "expected_files": ["src/indexer.py"],
+      "expected_symbols": ["reset_collection"],
+      "ground_truth_answer": "`reset_collection` deletes the existing ChromaDB collection by name and immediately recreates it with the same cosine-space metadata. This is useful when you want to fully re-index a repository from scratch — for example after significant refactoring — without keeping stale chunks from deleted or renamed files."
+    },
+    {
+      "id": "eval_021",
+      "category": "architecture",
+      "question": "How are module-level code statements (imports, constants) handled by the chunker?",
+      "expected_files": ["src/chunker.py"],
+      "expected_symbols": ["_chunk_with_ast"],
+      "ground_truth_answer": "After extracting class and function nodes, `_chunk_with_ast` tracks all line numbers owned by those symbols in a `covered` set. Any lines not in the set are considered module-level (imports, constants, top-level statements). These uncovered lines are joined and stored as a single `CodeChunk` with `symbol_type='module'` and `symbol_name='<module>'`."
+    },
+    {
+      "id": "eval_022",
+      "category": "git_history",
+      "question": "What fields does each commit entry returned by get_git_file_history contain?",
+      "expected_files": ["src/git_utils.py"],
+      "expected_symbols": ["get_git_file_history"],
+      "ground_truth_answer": "Each commit dict contains: `commit_hash` (full 40-char SHA-1), `short_hash` (first 7 chars), `author` (author name string), `author_email` (author email string), `date` (ISO-8601 UTC timestamp), and `message` (first line of the commit message only). The date is derived from `commit.authored_date` (a Unix timestamp) converted via `datetime.fromtimestamp(..., tz=timezone.utc).isoformat()`."
+    }
+  ]
+}

@@ -1,0 +1,10 @@
+fastmcp>=3.0.0
+tree-sitter
+tree-sitter-languages
+tree-sitter-python
+chromadb
+sentence-transformers
+GitPython
+pydantic
+pytest
+pytest-asyncio
