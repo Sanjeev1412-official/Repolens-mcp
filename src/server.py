@@ -334,6 +334,7 @@ if __name__ == "__main__":
     from starlette.responses import JSONResponse
     
     @mcp.custom_route("/.well-known/mcp/server-card.json", methods=["GET"])
+    @mcp.custom_route("/sse/.well-known/mcp/server-card.json", methods=["GET"])
     async def server_card(request):
         return JSONResponse({
             "name": "sanjeev1412-official/repolens-mcp",
