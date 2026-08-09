@@ -330,6 +330,31 @@ threading.Thread(target=_preload_indexer, daemon=True).start()
 if __name__ == "__main__":
     # The indexer is eagerly loaded in a background thread above.
 
+    # Expose a server-card.json for Smithery external registry scanning
+    from starlette.responses import JSONResponse
+    
+    @mcp.custom_route("/.well-known/mcp/server-card.json", methods=["GET"])
+    async def server_card(request):
+        return JSONResponse({
+            "name": "sanjeev1412-official/repolens-mcp",
+            "version": "1.0.0",
+            "description": "RepoLens MCP: Context Layer for Local Codebases",
+            "tools": [
+                {
+                    "name": "search_codebase",
+                    "description": "Search the indexed repository codebase using semantic vector similarity. Finds code chunks (functions, classes, or module-level code) that are semantically relevant to the query and returns them ranked by similarity."
+                },
+                {
+                    "name": "read_file_content",
+                    "description": "Read exact contents of a file within the workspace. Prepends line numbers to output for LLM readability. Protects against path traversal outside the repository."
+                },
+                {
+                    "name": "get_file_history",
+                    "description": "Retrieves the Git commit history (authors, dates, and messages) for a specific file to provide context on code provenance and rationale."
+                }
+            ]
+        })
+
     transport = os.environ.get("MCP_TRANSPORT", "stdio").lower()
     if transport == "sse":
         port = int(os.environ.get("PORT", 8000))
