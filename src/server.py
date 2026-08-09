@@ -337,8 +337,10 @@ if __name__ == "__main__":
     @mcp.custom_route("/sse/.well-known/mcp/server-card.json", methods=["GET"])
     async def server_card(request):
         return JSONResponse({
-            "name": "sanjeev1412-official/repolens-mcp",
-            "version": "1.0.0",
+            "serverInfo": {
+                "name": "sanjeev1412-official/repolens-mcp",
+                "version": "1.0.0"
+            },
             "description": "RepoLens MCP: Context Layer for Local Codebases",
             "tools": [
                 {
@@ -353,7 +355,9 @@ if __name__ == "__main__":
                     "name": "get_file_history",
                     "description": "Retrieves the Git commit history (authors, dates, and messages) for a specific file to provide context on code provenance and rationale."
                 }
-            ]
+            ],
+            "resources": [],
+            "prompts": []
         })
 
     transport = os.environ.get("MCP_TRANSPORT", "stdio").lower()
