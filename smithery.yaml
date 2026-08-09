@@ -1,0 +1,19 @@
+# Smithery configuration file
+# Ref: https://smithery.ai/docs/build/project-config
+startCommand:
+  type: stdio
+  configSchema:
+    type: object
+    properties:
+      repoPath:
+        type: string
+        description: Absolute path to the local repository to index and search.
+        default: "."
+  commandFunction: |-
+    (config) => ({
+      command: 'python',
+      args: ['src/server.py'],
+      env: {
+        REPO_PATH: config?.repoPath || '.'
+      }
+    })
