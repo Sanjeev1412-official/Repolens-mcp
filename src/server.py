@@ -342,6 +342,9 @@ if __name__ == "__main__":
                 "version": "1.0.0"
             },
             "description": "RepoLens MCP: Context Layer for Local Codebases",
+            "authentication": {
+                "required": False
+            },
             "tools": [
                 {
                     "name": "search_codebase",
