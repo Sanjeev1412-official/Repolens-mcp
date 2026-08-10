@@ -495,30 +495,178 @@ if __name__ == "__main__":
     @mcp.custom_route("/sse", methods=["POST"])
     async def sse_post_handler(request):
         """
-        Smithery CLI has a bug where its automated scanner POSTs the initialization 
-        payload directly to the /sse connection URL instead of using the relative 
-        endpoint provided in the SSE stream. This catches that request and returns a 
-        mocked initialization response to bypass the scanner's connection test.
+        Smithery's automated scanner POSTs MCP JSON-RPC messages directly to /sse
+        rather than establishing a proper SSE session first. It calls, in order:
+          initialize → tools/list → resources/list → prompts/list
+
+        The original handler returned the same mock initialization payload for ALL
+        methods, so tools/list received an init response with no `tools` array,
+        causing Smithery's Zod validator to fail with:
+          "Invalid input: expected array, received undefined"
+
+        This handler dispatches on `method` and returns the correct MCP response
+        for each lifecycle call. Proper SSE sessions from real clients (Claude, etc.)
+        always use GET /sse + the message endpoint provided in the SSE stream, so
+        this handler does not interfere with live tool calls.
         """
         try:
             body = await request.json()
             req_id = body.get("id", 1)
+            method = body.get("method", "")
         except Exception:
             req_id = 1
-            
+            method = ""
+
+        _server_info = {
+            "name": "sanjeev1412-official/repolens-mcp",
+            "version": "1.0.0",
+        }
+
+        # ── initialize ────────────────────────────────────────────────────────
+        if method == "initialize":
+            return JSONResponse({
+                "jsonrpc": "2.0",
+                "id": req_id,
+                "result": {
+                    "protocolVersion": "2024-11-05",
+                    "capabilities": {
+                        "tools":     {},
+                        "resources": {},
+                        "prompts":   {},
+                    },
+                    "serverInfo": _server_info,
+                },
+            })
+
+        # ── tools/list ────────────────────────────────────────────────────────
+        if method == "tools/list":
+            return JSONResponse({
+                "jsonrpc": "2.0",
+                "id": req_id,
+                "result": {
+                    "tools": [
+                        {
+                            "name": "search_codebase",
+                            "description": (
+                                "Search the indexed repository codebase using semantic "
+                                "vector similarity. Returns ranked code chunks (functions, "
+                                "classes, or module-level code) with similarity scores, "
+                                "file paths, line ranges, and source snippets."
+                            ),
+                            "inputSchema": {
+                                "type": "object",
+                                "properties": {
+                                    "query": {
+                                        "type": "string",
+                                        "description": "Natural-language description or code snippet to search for.",
+                                    },
+                                    "top_k": {
+                                        "type": "integer",
+                                        "description": "Maximum number of results to return (default 5).",
+                                        "default": 5,
+                                    },
+                                },
+                                "required": ["query"],
+                            },
+                        },
+                        {
+                            "name": "read_file_content",
+                            "description": (
+                                "Read a slice of a source file from the indexed repository. "
+                                "Returns the requested line range with 1-indexed line numbers."
+                            ),
+                            "inputSchema": {
+                                "type": "object",
+                                "properties": {
+                                    "file_path": {
+                                        "type": "string",
+                                        "description": "Path relative to the repository root (e.g. src/utils.py).",
+                                    },
+                                    "start_line": {
+                                        "type": "integer",
+                                        "description": "1-indexed line to begin reading from (default 1).",
+                                        "default": 1,
+                                    },
+                                    "end_line": {
+                                        "type": "integer",
+                                        "description": "1-indexed line to stop reading at (default 200).",
+                                        "default": 200,
+                                    },
+                                },
+                                "required": ["file_path"],
+                            },
+                        },
+                        {
+                            "name": "get_file_history",
+                            "description": (
+                                "Retrieve the 10 most-recent Git commits that touched a file, "
+                                "including short hash, date, author, and commit message."
+                            ),
+                            "inputSchema": {
+                                "type": "object",
+                                "properties": {
+                                    "file_path": {
+                                        "type": "string",
+                                        "description": "Path relative to the repository root (e.g. src/chunker.py).",
+                                    },
+                                },
+                                "required": ["file_path"],
+                            },
+                        },
+                        {
+                            "name": "index_github_repo",
+                            "description": (
+                                "Clones a public GitHub repository, parses its AST structure, "
+                                "and indexes code chunks into the RepoLens ChromaDB vector store."
+                            ),
+                            "inputSchema": {
+                                "type": "object",
+                                "properties": {
+                                    "repo_url": {
+                                        "type": "string",
+                                        "description": "The full Git clone URL (e.g., https://github.com/user/repo.git).",
+                                    },
+                                },
+                                "required": ["repo_url"],
+                            },
+                        },
+                    ]
+                },
+            })
+
+        # ── resources/list ───────────────────────────────────────────────────
+        if method == "resources/list":
+            return JSONResponse({
+                "jsonrpc": "2.0",
+                "id": req_id,
+                "result": {"resources": []},
+            })
+
+        # ── prompts/list ─────────────────────────────────────────────────────
+        if method == "prompts/list":
+            return JSONResponse({
+                "jsonrpc": "2.0",
+                "id": req_id,
+                "result": {"prompts": []},
+            })
+
+        # ── notifications/initialized (no response required) ─────────────────
+        if method.startswith("notifications/"):
+            return JSONResponse({"jsonrpc": "2.0", "id": req_id, "result": {}})
+
+        # ── unknown method ───────────────────────────────────────────────────
+        # Real tool calls arrive via the SSE message endpoint, not here.
         return JSONResponse({
             "jsonrpc": "2.0",
             "id": req_id,
-            "result": {
-                "protocolVersion": "2024-11-05",
-                "capabilities": {
-                    "tools": {}
-                },
-                "serverInfo": {
-                    "name": "sanjeev1412-official/repolens-mcp",
-                    "version": "1.0.0"
-                }
-            }
+            "error": {
+                "code": -32601,
+                "message": (
+                    f"Method '{method}' is not handled on this endpoint. "
+                    "Tool calls must use the SSE session (GET /sse) and the "
+                    "message endpoint provided in the stream."
+                ),
+            },
         })
 
     @mcp.custom_route("/", methods=["GET"])
