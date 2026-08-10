@@ -29,6 +29,7 @@ Or register with Claude Desktop / Cursor in their MCP config JSON.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import shutil
@@ -77,6 +78,14 @@ mcp: FastMCP = FastMCP("RepoLens MCP")
 # Deferred at module level so tests can patch before import triggers indexing.
 _indexer = None
 _indexer_lock = threading.Lock()
+
+# ---------------------------------------------------------------------------
+# Background indexing job tracker
+# ---------------------------------------------------------------------------
+# Maps repo_url → {"status": "running"|"done"|"error", "message": str, "count": int}
+# Allows index_github_repo to return immediately while work continues in a thread.
+_index_jobs: dict[str, dict] = {}
+_index_jobs_lock = threading.Lock()
 
 def _get_indexer():
     """Return the module-level indexer, initialising it on first access."""
@@ -314,6 +323,10 @@ def get_file_history(file_path: str) -> str:
 def index_github_repo(repo_url: str) -> str:
     """Clones a public GitHub repository, parses its AST structure, and indexes code chunks into the RepoLens ChromaDB vector store.
 
+    Indexing is performed asynchronously in a background thread so this tool
+    returns immediately. Call ``get_index_status`` with the same ``repo_url``
+    to poll for completion before running ``search_codebase``.
+
     Parameters
     ----------
     repo_url:
@@ -324,8 +337,8 @@ def index_github_repo(repo_url: str) -> str:
     Returns
     -------
     str
-        A confirmation message with the repository URL and local path that was
-        indexed, or a descriptive error string if cloning or indexing failed.
+        A message confirming the background job has started, including the
+        clone directory. Check status with ``get_index_status``.
     """
     if not repo_url or not repo_url.strip():
         return "Error: repo_url must be a non-empty string."
@@ -342,78 +355,162 @@ def index_github_repo(repo_url: str) -> str:
             f"Received: '{repo_url}'"
         )
 
+    # --- Guard: reject if a job is already running for this URL ---------------
+    with _index_jobs_lock:
+        existing = _index_jobs.get(repo_url)
+        if existing and existing["status"] == "running":
+            return (
+                f"Indexing already in progress for '{repo_url}'.\n"
+                f"Call get_index_status(repo_url='{repo_url}') to check progress."
+            )
+
     # --- Derive a stable clone directory from the URL -------------------------
-    # e.g. https://github.com/user/my-repo.git  →  repolens_clone_user_my-repo
     url_slug = repo_url.rstrip("/").rstrip(".git").rsplit("/", 2)
     repo_name_part = "_".join(url_slug[-2:]) if len(url_slug) >= 2 else url_slug[-1]
     safe_name = "".join(c if c.isalnum() or c in "-_" else "_" for c in repo_name_part)
     clone_dir = os.path.join(tempfile.gettempdir(), f"repolens_clone_{safe_name}")
 
-    # --- Clean up stale clone -------------------------------------------------
-    if os.path.exists(clone_dir):
+    # --- Background worker ---------------------------------------------------
+    def _worker() -> None:
+        with _index_jobs_lock:
+            _index_jobs[repo_url] = {"status": "running", "message": "Cloning repository…", "count": 0}
+
         try:
-            shutil.rmtree(clone_dir)
-            logger.info("Removed stale clone directory: %s", clone_dir)
-        except OSError as exc:
-            return f"Error: could not remove existing clone directory '{clone_dir}': {exc}"
+            from git import Repo, GitCommandError, GitCommandNotFound  # type: ignore
+        except ImportError:
+            with _index_jobs_lock:
+                _index_jobs[repo_url] = {
+                    "status": "error",
+                    "message": "GitPython is not installed. Run: pip install GitPython",
+                    "count": 0,
+                }
+            return
 
-    # --- Clone ----------------------------------------------------------------
-    try:
-        from git import Repo, GitCommandError, GitCommandNotFound, InvalidGitRepositoryError  # type: ignore
-    except ImportError:
-        return (
-            "Error: GitPython is not installed. "
-            "Install it with: pip install GitPython"
-        )
-
-    logger.info("Cloning '%s' → %s", repo_url, clone_dir)
-    try:
-        Repo.clone_from(repo_url, clone_dir)
-    except GitCommandNotFound:
-        return (
-            "Error: 'git' binary not found on this system. "
-            "Please install Git and ensure it is available in PATH."
-        )
-    except GitCommandError as exc:
-        # Tidy up any partial clone before returning
+        # Clean up any stale clone
         if os.path.exists(clone_dir):
             shutil.rmtree(clone_dir, ignore_errors=True)
-        return (
-            f"Error cloning '{repo_url}': {exc.stderr.strip() if exc.stderr else exc}"
-        )
-    except Exception as exc:  # noqa: BLE001
-        if os.path.exists(clone_dir):
+
+        logger.info("[index_job] Cloning '%s' → %s", repo_url, clone_dir)
+        try:
+            Repo.clone_from(repo_url, clone_dir)
+        except GitCommandNotFound:
+            with _index_jobs_lock:
+                _index_jobs[repo_url] = {
+                    "status": "error",
+                    "message": "'git' binary not found. Install Git and ensure it is in PATH.",
+                    "count": 0,
+                }
+            return
+        except GitCommandError as exc:
             shutil.rmtree(clone_dir, ignore_errors=True)
-        return f"Error cloning '{repo_url}': {exc}"
+            with _index_jobs_lock:
+                _index_jobs[repo_url] = {
+                    "status": "error",
+                    "message": f"Clone failed: {exc.stderr.strip() if exc.stderr else exc}",
+                    "count": 0,
+                }
+            return
+        except Exception as exc:  # noqa: BLE001
+            shutil.rmtree(clone_dir, ignore_errors=True)
+            with _index_jobs_lock:
+                _index_jobs[repo_url] = {
+                    "status": "error",
+                    "message": f"Clone failed: {exc}",
+                    "count": 0,
+                }
+            return
 
-    # --- Index ----------------------------------------------------------------
-    # Reuse the primary indexer's already-loaded model and shared ChromaDB
-    # collection. GitHub chunks get a "github/<safe_name>/" prefix on their
-    # chunk IDs so they live alongside local chunks without colliding.
-    try:
-        primary = _get_indexer()
-        from src.indexer import RepoLensIndexer
+        with _index_jobs_lock:
+            _index_jobs[repo_url]["message"] = "Clone complete. Indexing code chunks…"
 
-        # Pass the already-loaded model to avoid loading a second copy of
-        # PyTorch into memory (would push Render past the 512 MB cap).
-        github_indexer = RepoLensIndexer(
-            chroma_path=primary.chroma_path,
-            collection_name=primary._collection_name,
-            model=primary._model,
-        )
-        count = github_indexer.index_repository(clone_dir)
-    except Exception as exc:  # noqa: BLE001
-        logger.error("index_github_repo indexing error: %s", exc, exc_info=True)
-        return (
-            f"Repository cloned to '{clone_dir}' but indexing failed: {exc}"
-        )
+        try:
+            from src.indexer import RepoLensIndexer
+            primary = _get_indexer()
+            github_indexer = RepoLensIndexer(
+                chroma_path=primary.chroma_path,
+                collection_name=primary._collection_name,
+                model=primary._model,
+            )
+            count = github_indexer.index_repository(clone_dir)
+        except Exception as exc:  # noqa: BLE001
+            logger.error("[index_job] Indexing error: %s", exc, exc_info=True)
+            with _index_jobs_lock:
+                _index_jobs[repo_url] = {
+                    "status": "error",
+                    "message": f"Cloned OK but indexing failed: {exc}",
+                    "count": 0,
+                }
+            return
+
+        with _index_jobs_lock:
+            _index_jobs[repo_url] = {
+                "status": "done",
+                "message": (
+                    f"Cloned to {clone_dir}. "
+                    f"Indexed into ChromaDB at {primary.chroma_path}."
+                ),
+                "count": count,
+            }
+        logger.info("[index_job] '%s' complete — %d chunks.", repo_url, count)
+
+    # --- Launch and return immediately ----------------------------------------
+    with _index_jobs_lock:
+        _index_jobs[repo_url] = {"status": "running", "message": "Job queued.", "count": 0}
+    threading.Thread(target=_worker, daemon=True, name=f"index:{repo_url}").start()
 
     return (
-        f"Successfully cloned and indexed '{repo_url}'.\n"
-        f"  Local clone : {clone_dir}\n"
-        f"  ChromaDB    : {primary.chroma_path}\n"
-        f"  Chunks indexed: {count} (added to shared collection)"
+        f"✅ Indexing job started for '{repo_url}'.\n"
+        f"   Clone target : {clone_dir}\n"
+        f"   This runs in the background. Call:\n"
+        f"   get_index_status(repo_url='{repo_url}')\n"
+        f"   to check progress before calling search_codebase."
     )
+
+
+@mcp.tool()
+def get_index_status(repo_url: str) -> str:
+    """Check the status of a background repository indexing job started by index_github_repo.
+
+    Parameters
+    ----------
+    repo_url:
+        The same Git clone URL passed to ``index_github_repo``.
+
+    Returns
+    -------
+    str
+        Current job status: running, done (with chunk count), or error details.
+        When status is 'done', you may call ``search_codebase`` immediately.
+    """
+    if not repo_url or not repo_url.strip():
+        return "Error: repo_url must be a non-empty string."
+
+    repo_url = repo_url.strip()
+    with _index_jobs_lock:
+        job = _index_jobs.get(repo_url)
+
+    if job is None:
+        return (
+            f"No indexing job found for '{repo_url}'.\n"
+            "Call index_github_repo first."
+        )
+
+    status  = job["status"]
+    message = job["message"]
+    count   = job.get("count", 0)
+
+    if status == "running":
+        return f"⏳ Indexing in progress for '{repo_url}'…\n   {message}"
+    if status == "done":
+        return (
+            f"✅ Indexing complete for '{repo_url}'.\n"
+            f"   {message}\n"
+            f"   Chunks indexed: {count}\n"
+            f"   You can now call search_codebase to query this repository."
+        )
+    if status == "error":
+        return f"❌ Indexing failed for '{repo_url}'.\n   Error: {message}"
+    return f"Status: {status} — {message}"
 
 
 # ---------------------------------------------------------------------------
@@ -616,8 +713,9 @@ if __name__ == "__main__":
                         {
                             "name": "index_github_repo",
                             "description": (
-                                "Clones a public GitHub repository, parses its AST structure, "
-                                "and indexes code chunks into the RepoLens ChromaDB vector store."
+                                "Clones a public GitHub repository in the background and indexes "
+                                "code chunks into the RepoLens ChromaDB vector store. Returns "
+                                "immediately. Call get_index_status to poll for completion."
                             ),
                             "inputSchema": {
                                 "type": "object",
@@ -625,6 +723,24 @@ if __name__ == "__main__":
                                     "repo_url": {
                                         "type": "string",
                                         "description": "The full Git clone URL (e.g., https://github.com/user/repo.git).",
+                                    },
+                                },
+                                "required": ["repo_url"],
+                            },
+                        },
+                        {
+                            "name": "get_index_status",
+                            "description": (
+                                "Check the status of a background indexing job started by "
+                                "index_github_repo. Returns running / done (with chunk count) / "
+                                "error. When done, you may immediately call search_codebase."
+                            ),
+                            "inputSchema": {
+                                "type": "object",
+                                "properties": {
+                                    "repo_url": {
+                                        "type": "string",
+                                        "description": "The same Git clone URL passed to index_github_repo.",
                                     },
                                 },
                                 "required": ["repo_url"],
@@ -649,6 +765,7 @@ if __name__ == "__main__":
                 "read_file_content": read_file_content,
                 "get_file_history":  get_file_history,
                 "index_github_repo": index_github_repo,
+                "get_index_status":  get_index_status,
             }
 
             if tool_name not in _tool_dispatch:
@@ -663,7 +780,11 @@ if __name__ == "__main__":
                 })
 
             try:
-                result_text = _tool_dispatch[tool_name](**arguments)
+                # Run synchronous tool in a thread pool so the async event loop
+                # is never blocked (important for fast response on other requests).
+                result_text = await asyncio.to_thread(
+                    _tool_dispatch[tool_name], **arguments
+                )
                 return JSONResponse({
                     "jsonrpc": "2.0",
                     "id": req_id,
