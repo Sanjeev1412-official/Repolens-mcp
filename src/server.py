@@ -415,7 +415,8 @@ def index_github_repo(repo_url: str) -> str:
 
         logger.info("[index_job] Cloning '%s' → %s", repo_url, clone_dir)
         try:
-            Repo.clone_from(repo_url, clone_dir)
+            # Disable terminal prompts so git fails immediately instead of hanging on auth
+            Repo.clone_from(repo_url, clone_dir, env={"GIT_TERMINAL_PROMPT": "0"})
         except GitCommandNotFound:
             with _index_jobs_lock:
                 _index_jobs[repo_url] = {

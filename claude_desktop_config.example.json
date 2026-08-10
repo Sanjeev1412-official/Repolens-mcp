@@ -2,6 +2,11 @@
   "_comment": [
     "RepoLens MCP – Claude Desktop integration configs",
     "",
+    "CLOUD (Prefect Horizon) - Recommended:",
+    "  Use the 'cloud' section below if you have deployed to Prefect Horizon.",
+    "  Live URL: https://repolens.fastmcp.app/mcp",
+    "  Get your API key from: https://horizon.prefect.io → repolens → API Keys",
+    "",
     "WINDOWS PATH (AppData):",
     "  %APPDATA%\\Claude\\claude_desktop_config.json",
     "  e.g. C:\\Users\\<YourUser>\\AppData\\Roaming\\Claude\\claude_desktop_config.json",
@@ -10,12 +15,24 @@
     "  ~/Library/Application Support/Claude/claude_desktop_config.json",
     "",
     "Instructions:",
-    "  1. Copy the block for your OS into the real claude_desktop_config.json.",
+    "  1. Copy ONE block (cloud OR local) into the real claude_desktop_config.json.",
     "  2. If claude_desktop_config.json already has other servers, merge the",
     "     'repolens' key into the existing 'mcpServers' object.",
-    "  3. Adjust REPO_PATH to the repository you want to index.",
+    "  3. For local: adjust REPO_PATH to the repository you want to index.",
     "  4. Restart Claude Desktop after saving."
   ],
+
+  "cloud": {
+    "_note": "Prefect Horizon deployment — no local Python needed. Get API key from horizon.prefect.io.",
+    "mcpServers": {
+      "repolens": {
+        "url": "https://repolens.fastmcp.app/mcp",
+        "headers": {
+          "Authorization": "Bearer YOUR_HORIZON_API_KEY_HERE"
+        }
+      }
+    }
+  },
 
   "windows": {
     "mcpServers": {
