@@ -634,6 +634,65 @@ if __name__ == "__main__":
                 },
             })
 
+        # ── tools/call ───────────────────────────────────────────────────────
+        # Smithery's proxy routes ALL MCP messages (including live tool calls)
+        # as plain POSTs to /sse instead of using the real SSE stream.
+        # We dispatch directly to the Python tool functions here so Smithery
+        # clients can execute tools without a persistent SSE connection.
+        if method == "tools/call":
+            params    = body.get("params", {})
+            tool_name = params.get("name", "")
+            arguments = params.get("arguments", {})
+
+            _tool_dispatch = {
+                "search_codebase":   search_codebase,
+                "read_file_content": read_file_content,
+                "get_file_history":  get_file_history,
+                "index_github_repo": index_github_repo,
+            }
+
+            if tool_name not in _tool_dispatch:
+                return JSONResponse({
+                    "jsonrpc": "2.0",
+                    "id": req_id,
+                    "error": {
+                        "code": -32602,
+                        "message": f"Unknown tool: '{tool_name}'. "
+                                   f"Available: {list(_tool_dispatch)}",
+                    },
+                })
+
+            try:
+                result_text = _tool_dispatch[tool_name](**arguments)
+                return JSONResponse({
+                    "jsonrpc": "2.0",
+                    "id": req_id,
+                    "result": {
+                        "content": [{"type": "text", "text": str(result_text)}],
+                        "isError": False,
+                    },
+                })
+            except TypeError as exc:
+                # Bad arguments (missing required param, wrong type, etc.)
+                return JSONResponse({
+                    "jsonrpc": "2.0",
+                    "id": req_id,
+                    "result": {
+                        "content": [{"type": "text", "text": f"Invalid arguments for '{tool_name}': {exc}"}],
+                        "isError": True,
+                    },
+                })
+            except Exception as exc:  # noqa: BLE001
+                logger.error("tools/call '%s' error: %s", tool_name, exc, exc_info=True)
+                return JSONResponse({
+                    "jsonrpc": "2.0",
+                    "id": req_id,
+                    "result": {
+                        "content": [{"type": "text", "text": f"Error running '{tool_name}': {exc}"}],
+                        "isError": True,
+                    },
+                })
+
         # ── resources/list ───────────────────────────────────────────────────
         if method == "resources/list":
             return JSONResponse({
@@ -650,22 +709,17 @@ if __name__ == "__main__":
                 "result": {"prompts": []},
             })
 
-        # ── notifications/initialized (no response required) ─────────────────
+        # ── notifications/* (fire-and-forget, no response required) ──────────
         if method.startswith("notifications/"):
             return JSONResponse({"jsonrpc": "2.0", "id": req_id, "result": {}})
 
-        # ── unknown method ───────────────────────────────────────────────────
-        # Real tool calls arrive via the SSE message endpoint, not here.
+        # ── unknown method ────────────────────────────────────────────────────
         return JSONResponse({
             "jsonrpc": "2.0",
             "id": req_id,
             "error": {
                 "code": -32601,
-                "message": (
-                    f"Method '{method}' is not handled on this endpoint. "
-                    "Tool calls must use the SSE session (GET /sse) and the "
-                    "message endpoint provided in the stream."
-                ),
+                "message": f"Method '{method}' is not supported on this endpoint.",
             },
         })
 
