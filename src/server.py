@@ -1,12 +1,13 @@
 """
 server.py - Phase 3: FastMCP Server Entry Point
 ================================================
-Exposes three MCP tools over stdio transport for use with Claude Desktop,
+Exposes four MCP tools over stdio transport for use with Claude Desktop,
 Cursor, or any other MCP-compatible client:
 
 * ``search_codebase``    - Semantic vector search over indexed repository code.
 * ``read_file_content``  - Safe line-range reader for any file in the repo.
 * ``get_file_history``   - Git commit provenance log for a single file.
+* ``index_github_repo``  - Clone and index a remote GitHub repository on the fly.
 
 Environment variables
 ---------------------
@@ -30,7 +31,9 @@ from __future__ import annotations
 
 import logging
 import os
+import shutil
 import sys
+import tempfile
 import textwrap
 import threading
 from pathlib import Path
@@ -308,6 +311,109 @@ def get_file_history(file_path: str) -> str:
     divider = "─" * len(header)
     return f"{header}\n{divider}\n{summary}"
 
+@mcp.tool()
+def index_github_repo(repo_url: str) -> str:
+    """Clones a public GitHub repository, parses its AST structure, and indexes code chunks into the RepoLens ChromaDB vector store.
+
+    Parameters
+    ----------
+    repo_url:
+        The full Git clone URL of a public GitHub repository.
+        Must start with ``https://github.com/`` or end with ``.git``.
+        Example: ``https://github.com/user/repo.git``
+
+    Returns
+    -------
+    str
+        A confirmation message with the repository URL and local path that was
+        indexed, or a descriptive error string if cloning or indexing failed.
+    """
+    if not repo_url or not repo_url.strip():
+        return "Error: repo_url must be a non-empty string."
+
+    repo_url = repo_url.strip()
+
+    # --- Validation -----------------------------------------------------------
+    is_github = repo_url.startswith("https://github.com/")
+    is_git_url = repo_url.endswith(".git")
+    if not (is_github or is_git_url):
+        return (
+            "Error: invalid repo_url. "
+            "It must start with 'https://github.com/' or end with '.git'. "
+            f"Received: '{repo_url}'"
+        )
+
+    # --- Derive a stable clone directory from the URL -------------------------
+    # e.g. https://github.com/user/my-repo.git  →  repolens_clone_user_my-repo
+    url_slug = repo_url.rstrip("/").rstrip(".git").rsplit("/", 2)
+    repo_name_part = "_".join(url_slug[-2:]) if len(url_slug) >= 2 else url_slug[-1]
+    safe_name = "".join(c if c.isalnum() or c in "-_" else "_" for c in repo_name_part)
+    clone_dir = os.path.join(tempfile.gettempdir(), f"repolens_clone_{safe_name}")
+
+    # --- Clean up stale clone -------------------------------------------------
+    if os.path.exists(clone_dir):
+        try:
+            shutil.rmtree(clone_dir)
+            logger.info("Removed stale clone directory: %s", clone_dir)
+        except OSError as exc:
+            return f"Error: could not remove existing clone directory '{clone_dir}': {exc}"
+
+    # --- Clone ----------------------------------------------------------------
+    try:
+        from git import Repo, GitCommandError, GitCommandNotFound, InvalidGitRepositoryError  # type: ignore
+    except ImportError:
+        return (
+            "Error: GitPython is not installed. "
+            "Install it with: pip install GitPython"
+        )
+
+    logger.info("Cloning '%s' → %s", repo_url, clone_dir)
+    try:
+        Repo.clone_from(repo_url, clone_dir)
+    except GitCommandNotFound:
+        return (
+            "Error: 'git' binary not found on this system. "
+            "Please install Git and ensure it is available in PATH."
+        )
+    except GitCommandError as exc:
+        # Tidy up any partial clone before returning
+        if os.path.exists(clone_dir):
+            shutil.rmtree(clone_dir, ignore_errors=True)
+        return (
+            f"Error cloning '{repo_url}': {exc.stderr.strip() if exc.stderr else exc}"
+        )
+    except Exception as exc:  # noqa: BLE001
+        if os.path.exists(clone_dir):
+            shutil.rmtree(clone_dir, ignore_errors=True)
+        return f"Error cloning '{repo_url}': {exc}"
+
+    # --- Index ----------------------------------------------------------------
+    try:
+        from src.indexer import RepoLensIndexer
+
+        # Use a dedicated ChromaDB path so the GitHub index never collides with
+        # the primary repo index tracked by CHROMA_PATH.
+        import hashlib
+        url_hash = hashlib.sha256(repo_url.encode()).hexdigest()[:12]
+        github_chroma = os.path.expanduser(f"~/.repolens/github_{url_hash}")
+
+        logger.info("Indexing cloned repo at %s (chroma: %s)", clone_dir, github_chroma)
+        github_indexer = RepoLensIndexer(chroma_path=github_chroma)
+        count = github_indexer.index_repository(clone_dir)
+    except Exception as exc:  # noqa: BLE001
+        logger.error("index_github_repo indexing error: %s", exc, exc_info=True)
+        return (
+            f"Repository cloned to '{clone_dir}' but indexing failed: {exc}"
+        )
+
+    return (
+        f"Successfully cloned and indexed '{repo_url}'.\n"
+        f"  Local clone : {clone_dir}\n"
+        f"  ChromaDB    : {github_chroma}\n"
+        f"  Chunks indexed: {count}"
+    )
+
+
 # ---------------------------------------------------------------------------
 # Background Pre-loading
 # ---------------------------------------------------------------------------
@@ -357,6 +463,20 @@ if __name__ == "__main__":
                 {
                     "name": "get_file_history",
                     "description": "Retrieves the Git commit history (authors, dates, and messages) for a specific file to provide context on code provenance and rationale."
+                },
+                {
+                    "name": "index_github_repo",
+                    "description": "Clones a public GitHub repository, parses its AST structure, and indexes code chunks into the RepoLens ChromaDB vector store.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "repo_url": {
+                                "type": "string",
+                                "description": "The full Git clone URL (e.g., https://github.com/user/repo.git)."
+                            }
+                        },
+                        "required": ["repo_url"]
+                    }
                 }
             ],
             "resources": [],
