@@ -70,6 +70,15 @@ _default_db_path = os.path.expanduser(f"~/.repolens/db_{_repo_hash}")
 
 CHROMA_PATH: str = os.environ.get("CHROMA_PATH", _default_db_path)
 
+# When set to "1", _get_indexer() skips the initial index_repository(REPO_PATH)
+# call and only initialises the model + ChromaDB client. This is essential on
+# memory-constrained cloud hosts (e.g. Render free tier, 512 MB) where:
+#   a) REPO_PATH=/app points at the server itself, not a user repo, AND
+#   b) the background GitHub indexing thread also runs, so double-indexing
+#      would cause an OOM crash before any tool call can complete.
+# Set to "0" (default) on local or higher-memory hosts to retain full behaviour.
+_SKIP_INITIAL_INDEX: bool = os.environ.get("REPOLENS_SKIP_INITIAL_INDEX", "0").strip() == "1"
+
 # ---------------------------------------------------------------------------
 # Server + indexer initialisation
 # ---------------------------------------------------------------------------
@@ -88,19 +97,33 @@ _index_jobs: dict[str, dict] = {}
 _index_jobs_lock = threading.Lock()
 
 def _get_indexer():
-    """Return the module-level indexer, initialising it on first access."""
+    """Return the module-level indexer, initialising it on first access.
+
+    When ``REPOLENS_SKIP_INITIAL_INDEX=1`` the indexer is initialised (model
+    loaded, ChromaDB client opened) but ``index_repository(REPO_PATH)`` is
+    intentionally skipped.  This is the correct mode for cloud deployments
+    where ``REPO_PATH`` points at the server itself and GitHub repos are
+    indexed on demand via ``index_github_repo``.
+    """
     global _indexer
     if _indexer is not None:
         return _indexer
-        
+
     with _indexer_lock:
         if _indexer is None:
             from src.indexer import RepoLensIndexer
 
-            logger.info("Initialising RepoLensIndexer for repo: %s", REPO_PATH)
+            logger.info("Initialising RepoLensIndexer (skip_initial_index=%s)", _SKIP_INITIAL_INDEX)
             _indexer = RepoLensIndexer(chroma_path=CHROMA_PATH)
-            count = _indexer.index_repository(REPO_PATH)
-            logger.info("Indexing complete - %d chunks stored.", count)
+
+            if _SKIP_INITIAL_INDEX:
+                logger.info(
+                    "REPOLENS_SKIP_INITIAL_INDEX=1: skipping index_repository('%s').",
+                    REPO_PATH,
+                )
+            else:
+                count = _indexer.index_repository(REPO_PATH)
+                logger.info("Indexing complete - %d chunks stored.", count)
     return _indexer
 
 # ---------------------------------------------------------------------------

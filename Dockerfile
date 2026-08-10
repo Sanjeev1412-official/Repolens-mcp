@@ -9,6 +9,10 @@ ENV MCP_TRANSPORT=sse
 # Disable background pre-load at startup to stay within Render's 512 MB RAM cap.
 # Set to 1 on higher-memory instances to warm up the model before the first request.
 ENV REPOLENS_PRELOAD=0
+# Skip indexing REPO_PATH (/app) at startup on cloud deployments.
+# GitHub repos are indexed on demand via index_github_repo.
+# Override to 0 locally if you want the server to index a real local repo.
+ENV REPOLENS_SKIP_INITIAL_INDEX=0
 
 # Install system dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \

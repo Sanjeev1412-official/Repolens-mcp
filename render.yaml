@@ -7,3 +7,10 @@ services:
         value: sse
       - key: REPO_PATH
         value: /app
+      # Skip indexing /app (the server container) at startup.
+      # GitHub repos are indexed on demand via index_github_repo.
+      # This is required to stay within Render's 512 MB RAM cap.
+      - key: REPOLENS_SKIP_INITIAL_INDEX
+        value: "1"
+      - key: REPOLENS_PRELOAD
+        value: "0"
