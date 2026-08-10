@@ -30,6 +30,32 @@ _DEFAULT_COLLECTION_NAME: str = "repolens_codebase"
 _DEFAULT_EMBED_MODEL: str = "all-MiniLM-L6-v2"
 _DEFAULT_CHROMA_PATH: str = "./chroma_db"
 
+# ---------------------------------------------------------------------------
+# Shared model singleton
+# ---------------------------------------------------------------------------
+# Kept at module level so that multiple RepoLensIndexer instances (e.g. primary
+# repo + on-demand GitHub clones) never pay the cost of loading PyTorch twice.
+
+_shared_model = None  # SentenceTransformer | None
+_shared_model_name: str = ""
+
+
+def get_shared_model(embed_model_name: str = _DEFAULT_EMBED_MODEL):
+    """Return a process-wide SentenceTransformer singleton.
+
+    The model is loaded once and cached; subsequent calls with the same
+    model name return the cached instance immediately.
+    """
+    global _shared_model, _shared_model_name
+    if _shared_model is not None and _shared_model_name == embed_model_name:
+        return _shared_model
+    from sentence_transformers import SentenceTransformer  # type: ignore
+    logger.info("Loading shared embedding model: %s", embed_model_name)
+    _shared_model = SentenceTransformer(embed_model_name)
+    _shared_model_name = embed_model_name
+    logger.info("Shared embedding model ready.")
+    return _shared_model
+
 
 # ---------------------------------------------------------------------------
 # RepoLensIndexer
@@ -57,9 +83,9 @@ class RepoLensIndexer:
         chroma_path: str = _DEFAULT_CHROMA_PATH,
         collection_name: str = _DEFAULT_COLLECTION_NAME,
         embed_model_name: str = _DEFAULT_EMBED_MODEL,
+        model=None,  # Optional pre-loaded SentenceTransformer to avoid re-loading
     ) -> None:
         import chromadb  # type: ignore
-        from sentence_transformers import SentenceTransformer  # type: ignore
 
         self._embed_model_name = embed_model_name
         self._collection_name = collection_name
@@ -76,10 +102,14 @@ class RepoLensIndexer:
             metadata={"hnsw:space": "cosine"},
         )
 
-        # Load the embedding model once and reuse it across calls.
-        logger.info("Loading embedding model: %s", embed_model_name)
-        self._model = SentenceTransformer(embed_model_name)
-        logger.info("RepoLensIndexer ready (collection=%s)", collection_name)
+        # Use injected model when available to avoid loading a second copy of
+        # PyTorch/SentenceTransformer into memory (saves ~350 MB on Render).
+        if model is not None:
+            self._model = model
+            logger.info("RepoLensIndexer reusing shared model (collection=%s)", collection_name)
+        else:
+            self._model = get_shared_model(embed_model_name)
+            logger.info("RepoLensIndexer ready (collection=%s)", collection_name)
 
     # ------------------------------------------------------------------
     # Internal helpers

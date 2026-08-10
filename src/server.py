@@ -94,7 +94,6 @@ def _get_indexer():
             logger.info("Indexing complete - %d chunks stored.", count)
     return _indexer
 
-
 # ---------------------------------------------------------------------------
 # Helper: result formatter
 # ---------------------------------------------------------------------------
@@ -388,17 +387,20 @@ def index_github_repo(repo_url: str) -> str:
         return f"Error cloning '{repo_url}': {exc}"
 
     # --- Index ----------------------------------------------------------------
+    # Reuse the primary indexer's already-loaded model and shared ChromaDB
+    # collection. GitHub chunks get a "github/<safe_name>/" prefix on their
+    # chunk IDs so they live alongside local chunks without colliding.
     try:
+        primary = _get_indexer()
         from src.indexer import RepoLensIndexer
 
-        # Use a dedicated ChromaDB path so the GitHub index never collides with
-        # the primary repo index tracked by CHROMA_PATH.
-        import hashlib
-        url_hash = hashlib.sha256(repo_url.encode()).hexdigest()[:12]
-        github_chroma = os.path.expanduser(f"~/.repolens/github_{url_hash}")
-
-        logger.info("Indexing cloned repo at %s (chroma: %s)", clone_dir, github_chroma)
-        github_indexer = RepoLensIndexer(chroma_path=github_chroma)
+        # Pass the already-loaded model to avoid loading a second copy of
+        # PyTorch into memory (would push Render past the 512 MB cap).
+        github_indexer = RepoLensIndexer(
+            chroma_path=primary.chroma_path,
+            collection_name=primary._collection_name,
+            model=primary._model,
+        )
         count = github_indexer.index_repository(clone_dir)
     except Exception as exc:  # noqa: BLE001
         logger.error("index_github_repo indexing error: %s", exc, exc_info=True)
@@ -409,8 +411,8 @@ def index_github_repo(repo_url: str) -> str:
     return (
         f"Successfully cloned and indexed '{repo_url}'.\n"
         f"  Local clone : {clone_dir}\n"
-        f"  ChromaDB    : {github_chroma}\n"
-        f"  Chunks indexed: {count}"
+        f"  ChromaDB    : {primary.chroma_path}\n"
+        f"  Chunks indexed: {count} (added to shared collection)"
     )
 
 
@@ -420,13 +422,20 @@ def index_github_repo(repo_url: str) -> str:
 
 def _preload_indexer() -> None:
     """Pre-load the indexer (ChromaDB + SentenceTransformer) in the background.
-    This prevents the first tool call from timing out (e.g. 15s+ model load)."""
+    This prevents the first tool call from timing out (e.g. 15s+ model load).
+    Only runs when the REPOLENS_PRELOAD=1 environment variable is set to avoid
+    OOM on memory-constrained hosts like Render's free tier (512 MB cap)."""
     try:
         _get_indexer()
     except Exception as exc:
         logger.error("Background pre-load failed: %s", exc)
 
-threading.Thread(target=_preload_indexer, daemon=True).start()
+_preload_enabled = os.environ.get("REPOLENS_PRELOAD", "0").strip() == "1"
+if _preload_enabled:
+    logger.info("REPOLENS_PRELOAD=1: launching background pre-load thread.")
+    threading.Thread(target=_preload_indexer, daemon=True).start()
+else:
+    logger.info("Background pre-load disabled (set REPOLENS_PRELOAD=1 to enable).")
 
 
 # ---------------------------------------------------------------------------

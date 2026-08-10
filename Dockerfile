@@ -6,6 +6,9 @@ ENV PORT=8000
 ENV CHROMA_PATH=/app/data/chroma_db
 ENV REPO_PATH=/app
 ENV MCP_TRANSPORT=sse
+# Disable background pre-load at startup to stay within Render's 512 MB RAM cap.
+# Set to 1 on higher-memory instances to warm up the model before the first request.
+ENV REPOLENS_PRELOAD=0
 
 # Install system dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -22,7 +25,13 @@ COPY requirements.txt .
 # fastmcp[sse] installs them in FastMCP v3, but we can also just rely on FastMCP 
 # installing its own dependencies if we already have it in requirements.txt. 
 # However, requirements.txt has 'fastmcp>=3.0.0'. Let's ensure uvicorn and starlette are available:
-RUN pip install --no-cache-dir -r requirements.txt fastmcp[sse] uvicorn starlette sse-starlette
+# Install CPU-only PyTorch first (saves ~150 MB vs default GPU wheels) then
+# install the rest of the requirements on top of it.
+RUN pip install --no-cache-dir \
+        --extra-index-url https://download.pytorch.org/whl/cpu \
+        torch \
+    && pip install --no-cache-dir \
+        -r requirements.txt fastmcp[sse] uvicorn starlette sse-starlette
 
 # Pre-download the embedding model so it's baked into the image
 RUN python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('all-MiniLM-L6-v2')"

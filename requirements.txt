@@ -4,6 +4,10 @@ tree-sitter-languages
 tree-sitter-python
 chromadb
 sentence-transformers
+# CPU-only PyTorch — install with the extra-index-url below to avoid
+# pulling GPU wheels (~300 MB saved on Render/cloud deployments).
+# pip install -r requirements.txt --extra-index-url https://download.pytorch.org/whl/cpu
+torch
 GitPython
 pydantic
 pytest
